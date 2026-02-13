@@ -1,5 +1,5 @@
 {
-  "name": "citation-management",
+  "name": "citation-validator",
   "version": "0.1.0",
   "private": true,
   "scripts": {
