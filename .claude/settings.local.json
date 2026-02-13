@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_oh-my-claudecode_t__python_repl",
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --no-turbopack)",
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --no-turbopack --force)",
+      "Bash(node --version:*)",
+      "Bash(npm:*)",
+      "Bash(npx create-next-app@latest:*)",
+      "Bash(npx next build:*)",
+      "mcp__plugin_oh-my-claudecode_t__lsp_diagnostics",
+      "Bash(node:*)",
+      "Bash(npx tsc:*)",
+      "Bash(grep:*)",
+      "WebFetch(domain:apastyle.apa.org)",
+      "WebFetch(domain:www.lib.sfu.ca)",
+      "WebFetch(domain:library.csp.edu)"
+    ]
+  }
+}
