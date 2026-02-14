@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import type { ValidationResult } from '@/lib/types';
+import { copyToClipboard } from '@/lib/clipboard';
 
 interface CitationCardProps {
   result: ValidationResult;
@@ -15,21 +16,9 @@ export default function CitationCard({ result, index }: CitationCardProps) {
   const { citation, errors, autoFixes, manualFixes, fixedCitation, score } = result;
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(fixedCitation);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback
-      const textarea = document.createElement('textarea');
-      textarea.value = fixedCitation;
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+    await copyToClipboard(fixedCitation);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const getScoreColor = (score: number) => {

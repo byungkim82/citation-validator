@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { ValidationResult } from '@/lib/types';
 import CitationCard from './CitationCard';
+import { copyToClipboard } from '@/lib/clipboard';
 
 interface ValidationResultsProps {
   results: ValidationResult[];
@@ -74,20 +75,9 @@ function CopyAllButton({ results }: { results: ValidationResult[] }) {
 
   const handleCopyAll = async () => {
     const allFixed = results.map(r => r.fixedCitation).join('\n\n');
-    try {
-      await navigator.clipboard.writeText(allFixed);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = allFixed;
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+    await copyToClipboard(allFixed);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
