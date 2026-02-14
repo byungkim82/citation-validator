@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { normalizeTitle, titleSimilarity, parseCrossRefResponse } from '../client';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { normalizeTitle, titleSimilarity, parseCrossRefResponse, searchByTitle, lookupByDOI, findDOI } from '../client';
 
 describe('normalizeTitle', () => {
   it('lowercases and removes punctuation', () => {
@@ -118,5 +118,239 @@ describe('parseCrossRefResponse', () => {
     expect(result.editors).toHaveLength(1);
     expect(result.editors![0].lastName).toBe('Editor');
     expect(result.editors![0].initials).toBe('F. M.');
+  });
+});
+
+// ── API Function Tests ─────────────────────────────────────────────────
+
+const mockJournalItem = {
+  DOI: '10.1234/test',
+  title: ['Machine Learning in NLP'],
+  author: [{ family: 'Smith', given: 'John' }],
+  'published-print': { 'date-parts': [[2024]] },
+  'container-title': ['Journal of Computer Science'],
+  volume: '45',
+  issue: '2',
+  page: '123-145',
+  type: 'journal-article',
+};
+
+function mockFetchResponse(status: number, body?: unknown) {
+  return vi.fn().mockResolvedValueOnce({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  });
+}
+
+describe('searchByTitle', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns parsed work on successful search', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [mockJournalItem] } }));
+
+    const result = await searchByTitle('Machine Learning in NLP');
+
+    expect(result).not.toBeNull();
+    expect(result!.doi).toBe('10.1234/test');
+    expect(result!.title).toBe('Machine Learning in NLP');
+    expect(result!.authors[0].lastName).toBe('Smith');
+  });
+
+  it('returns null when no items found', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [] } }));
+
+    const result = await searchByTitle('Nonexistent Paper');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when message.items is missing', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: {} }));
+
+    const result = await searchByTitle('Some Paper');
+    expect(result).toBeNull();
+  });
+
+  it('returns null on rate limit (429)', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(429));
+
+    const result = await searchByTitle('Some paper');
+    expect(result).toBeNull();
+  });
+
+  it('returns null on server error (500)', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(500));
+
+    const result = await searchByTitle('Some paper');
+    expect(result).toBeNull();
+  });
+
+  it('returns null on network error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('Network failure')));
+
+    const result = await searchByTitle('Some paper');
+    expect(result).toBeNull();
+  });
+
+  it('encodes title in URL', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [] } }));
+
+    await searchByTitle('Title with spaces & special');
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('Title%20with%20spaces'),
+      expect.any(Object)
+    );
+  });
+
+  it('includes mailto parameter for polite pool', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [] } }));
+
+    await searchByTitle('Any title');
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('mailto='),
+      expect.any(Object)
+    );
+  });
+});
+
+describe('lookupByDOI', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns parsed work on successful lookup', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: mockJournalItem }));
+
+    const result = await lookupByDOI('10.1234/test');
+
+    expect(result).not.toBeNull();
+    expect(result!.doi).toBe('10.1234/test');
+    expect(result!.title).toBe('Machine Learning in NLP');
+  });
+
+  it('strips https://doi.org/ prefix from DOI', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: mockJournalItem }));
+
+    await lookupByDOI('https://doi.org/10.1234/test');
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/works/10.1234%2Ftest'),
+      expect.any(Object)
+    );
+  });
+
+  it('returns null when message is missing', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, {}));
+
+    const result = await lookupByDOI('10.1234/test');
+    expect(result).toBeNull();
+  });
+
+  it('returns null on rate limit (429)', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(429));
+
+    const result = await lookupByDOI('10.1234/test');
+    expect(result).toBeNull();
+  });
+
+  it('returns null on not found (404)', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(404));
+
+    const result = await lookupByDOI('10.1234/nonexistent');
+    expect(result).toBeNull();
+  });
+
+  it('returns null on network error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('Network failure')));
+
+    const result = await lookupByDOI('10.1234/test');
+    expect(result).toBeNull();
+  });
+});
+
+describe('findDOI', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns DOI when title and author match', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [mockJournalItem] } }));
+
+    const doi = await findDOI('Machine Learning in NLP', ['Smith']);
+
+    expect(doi).toBe('10.1234/test');
+  });
+
+  it('returns null when title similarity is too low', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, {
+      message: { items: [{
+        ...mockJournalItem,
+        title: ['Completely Different Title About Chemistry'],
+      }] },
+    }));
+
+    const doi = await findDOI('Machine Learning in NLP', ['Smith']);
+    expect(doi).toBeNull();
+  });
+
+  it('returns null when first author does not match', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [mockJournalItem] } }));
+
+    const doi = await findDOI('Machine Learning in NLP', ['Johnson']);
+    expect(doi).toBeNull();
+  });
+
+  it('returns DOI when no authors provided for verification', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [mockJournalItem] } }));
+
+    const doi = await findDOI('Machine Learning in NLP', []);
+    expect(doi).toBe('10.1234/test');
+  });
+
+  it('returns null when search returns no results', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [] } }));
+
+    const doi = await findDOI('Nonexistent Paper', ['Author']);
+    expect(doi).toBeNull();
+  });
+
+  it('returns null when search returns work without DOI', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, {
+      message: { items: [{ ...mockJournalItem, DOI: '' }] },
+    }));
+
+    const doi = await findDOI('Machine Learning in NLP', ['Smith']);
+    expect(doi).toBeNull();
+  });
+
+  it('supports partial author name matching', async () => {
+    vi.stubGlobal('fetch', mockFetchResponse(200, { message: { items: [mockJournalItem] } }));
+
+    // "Smith-Jones" should match "Smith"
+    const doi = await findDOI('Machine Learning in NLP', ['Smith-Jones']);
+    expect(doi).toBe('10.1234/test');
+  });
+
+  it('returns null on network error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('Network failure')));
+
+    const doi = await findDOI('Some Paper', ['Author']);
+    expect(doi).toBeNull();
   });
 });
