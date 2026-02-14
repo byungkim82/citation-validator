@@ -17,10 +17,32 @@ export function parseCitation(text: string): ParsedCitation {
   };
 
   try {
-    // Extract year - pattern: (YYYY) or (YYYY, Month Day)
-    const yearMatch = raw.match(/\((\d{4})(?:,\s*[A-Z][a-z]+\s+\d{1,2})?\)/);
+    // Extract year - supports multiple APA date formats:
+    // (YYYY), (YYYY, Month Day), (YYYY, Month Day-Day), (YYYY, Season),
+    // (YYYYa), (n.d.), (in press)
+    const yearRegex = /\((n\.d\.|in press|\d{4}[a-z]?(?:,\s*(?:[A-Z][a-z]+(?:\s+\d{1,2}(?:[–-]\d{1,2})?)?))?)\)/;
+    const yearMatch = raw.match(yearRegex);
     if (yearMatch) {
-      citation.year = yearMatch[1];
+      const fullDateStr = yearMatch[1];
+
+      if (fullDateStr === 'n.d.' || fullDateStr === 'in press') {
+        citation.year = fullDateStr;
+      } else {
+        // Extract base year (4 digits)
+        const baseYear = fullDateStr.match(/^(\d{4})/);
+        if (baseYear) {
+          citation.year = baseYear[1];
+        }
+        // Extract year suffix (e.g., "a" in "2024a")
+        const suffixMatch = fullDateStr.match(/^\d{4}([a-z])/);
+        if (suffixMatch) {
+          citation.yearSuffix = suffixMatch[1];
+        }
+        // Preserve full date if more than just year (e.g., "2024, March 15")
+        if (fullDateStr.includes(',')) {
+          citation.fullDate = fullDateStr;
+        }
+      }
 
       // Split text into before and after year
       const yearIndex = raw.indexOf(yearMatch[0]);
@@ -29,6 +51,11 @@ export function parseCitation(text: string): ParsedCitation {
 
       // Parse authors from text before year
       citation.authors = parseAuthors(beforeYear);
+
+      // Set group author flag on citation if any author is a group author
+      if (citation.authors.some(a => a.isGroupAuthor)) {
+        citation.isGroupAuthor = true;
+      }
 
       // Parse remaining citation elements from text after year
       parseRemainingElements(afterYear, citation);
@@ -105,6 +132,21 @@ function parseAuthors(authorBlock: string): Author[] {
     authorRegex.lastIndex = 0;
   }
 
+  // Group/organizational author fallback:
+  // If no individual authors matched but the block is non-empty,
+  // treat the entire block as a group author name
+  if (authors.length === 0 && block.length > 0) {
+    // Remove trailing period that separates author block from year
+    const groupName = block.replace(/\.\s*$/, '').trim();
+    if (groupName.length > 0) {
+      authors.push({
+        lastName: groupName,
+        initials: '',
+        isGroupAuthor: true,
+      });
+    }
+  }
+
   return authors;
 }
 
@@ -119,39 +161,174 @@ function normalizeInitials(initials: string): string {
 }
 
 /**
+ * Source segment matching pattern
+ */
+interface SourcePattern {
+  regex: RegExp;
+  extract: (match: RegExpMatchArray, citation: ParsedCitation) => void;
+}
+
+/**
+ * Ordered patterns for matching source segments (checked first-match-wins)
+ */
+const SOURCE_PATTERNS: SourcePattern[] = [
+  // "In Editor (Ed.), BookTitle (pp. X-Y). Publisher"
+  {
+    regex: /^In\s+(.+?)\s*\((?:Eds?\.|Trans\.)\),?\s*(.+?)\s*\(pp\.\s*([\d–-]+)\)\.\s*(.+)$/i,
+    extract: (m, c) => {
+      c.source = `In ${m[1]} (Ed.), ${m[2].trim()}`;
+      c.pages = m[3].trim();
+      c.publisher = m[4].trim().replace(/\.$/, '').split(',')[0].trim();
+      c.type = 'chapter';
+    },
+  },
+  // "In SourceName (pp. X-Y). Publisher"
+  {
+    regex: /^In\s+(.+?)\s*\(pp\.\s*([\d–-]+)\)\.\s*(.+)$/i,
+    extract: (m, c) => {
+      c.source = `In ${m[1].trim()}`;
+      c.pages = m[2].trim();
+      c.publisher = m[3].trim().replace(/\.$/, '').split(',')[0].trim();
+      c.type = 'chapter';
+    },
+  },
+  // "In SourceName (pp. X-Y)" without publisher
+  {
+    regex: /^In\s+(.+?)\s*\(pp\.\s*([\d–-]+)\)/i,
+    extract: (m, c) => {
+      c.source = `In ${m[1].trim()}`;
+      c.pages = m[2].trim();
+      c.type = 'chapter';
+    },
+  },
+  // Vol. X, No. Y, pp. Z (with prefixes - incorrect format)
+  {
+    regex: /^(.+?),?\s+Vol\.?\s*(\d+),?\s*No\.?\s*(\d+),?\s*pp\.?\s*([\d–-]+)?/i,
+    extract: (m, c) => {
+      c.source = m[1].trim();
+      c.volume = 'Vol. ' + m[2];
+      c.issue = 'No. ' + m[3];
+      c.pages = m[4] ? 'pp. ' + m[4] : undefined;
+      c.type = 'journal';
+    },
+  },
+  // Vol. X(Y), pp. Z (issue in parentheses, with prefixes)
+  {
+    regex: /^(.+?),?\s+Vol\.?\s*(\d+)\((\d+)\),?\s*(?:pp\.?\s*)?([\d–-]+)?/i,
+    extract: (m, c) => {
+      c.source = m[1].trim();
+      c.volume = 'Vol. ' + m[2];
+      c.issue = m[3];
+      c.pages = m[4] ? 'pp. ' + m[4] : undefined;
+      c.type = 'journal';
+    },
+  },
+  // Vol. X, pp. Y (no issue, with prefixes)
+  {
+    regex: /^(.+?),?\s+Vol\.?\s*(\d+),?\s*pp\.?\s*([\d–-]+)?/i,
+    extract: (m, c) => {
+      c.source = m[1].trim();
+      c.volume = 'Vol. ' + m[2];
+      c.pages = m[3] ? 'pp. ' + m[3] : undefined;
+      c.type = 'journal';
+    },
+  },
+  // volume(issue), pages (correct format)
+  {
+    regex: /^(.+?),?\s+(\d+)\((\d+)\),?\s*([\d–-]+)?/,
+    extract: (m, c) => {
+      c.source = m[1].trim();
+      c.volume = m[2];
+      c.issue = m[3];
+      c.pages = m[4];
+      c.type = 'journal';
+    },
+  },
+  // volume, pages (no issue, correct format)
+  {
+    regex: /^(.+?),?\s+(\d+),?\s*([\d–-]+)?/,
+    extract: (m, c) => {
+      c.source = m[1].trim();
+      c.volume = m[2];
+      c.pages = m[3];
+      c.type = 'journal';
+    },
+  },
+];
+
+/**
  * Parses the text after the year to extract title, source, volume, etc.
  */
 function parseRemainingElements(afterYear: string, citation: ParsedCitation): void {
   // Remove leading period and whitespace
   let remaining = afterYear.replace(/^\.\s*/, '').trim();
 
-  // Try to extract DOI first (both full URL and doi: prefix formats)
+  // 1. Extract DOI (both full URL and doi: prefix formats)
   const doiUrlMatch = remaining.match(/https?:\/\/(?:dx\.)?doi\.org\/([\w./-]+)/i);
   if (doiUrlMatch) {
     citation.doi = doiUrlMatch[1];
     citation.url = doiUrlMatch[0];
     remaining = remaining.replace(doiUrlMatch[0], '').trim();
   } else {
-    // Try to match doi: prefix format (e.g., "doi:10.1234/xyz")
     const doiPrefixMatch = remaining.match(/doi:\s*(10\.\S+)/i);
     if (doiPrefixMatch) {
-      citation.doi = doiPrefixMatch[1].replace(/\.$/, ''); // Remove trailing period if present
+      citation.doi = doiPrefixMatch[1].replace(/\.$/, '');
       remaining = remaining.replace(doiPrefixMatch[0], '').trim();
     }
   }
 
-  // Try to extract URL if no DOI
+  // Extract URL if no DOI
   if (!citation.doi) {
     const urlMatch = remaining.match(/(https?:\/\/[^\s]+)/i);
     if (urlMatch) {
       citation.url = urlMatch[1];
-      citation.type = 'web';
       remaining = remaining.replace(urlMatch[0], '').trim();
     }
   }
 
-  // Split by periods to get potential title and source
-  // Use a smarter split that doesn't break on periods inside parentheses like (pp. 20-31)
+  // Extract edition pattern from remaining text before segment split
+  // This handles "(Nth ed.)" which appears in the title segment for books
+  const editionPreMatch = remaining.match(/\((\d+)(?:st|nd|rd|th)\s+ed\.\)/i);
+  if (editionPreMatch) {
+    citation.edition = editionPreMatch[1];
+    remaining = remaining.replace(editionPreMatch[0], '').trim();
+  }
+
+  // 2. Extract [BracketType] — used for conference/dissertation detection
+  const bracketMatch = remaining.match(/\[(.+?)\]/);
+  if (bracketMatch) {
+    citation.bracketType = bracketMatch[1];
+    remaining = remaining.replace(bracketMatch[0], '').trim();
+
+    const bracketLower = bracketMatch[1].toLowerCase();
+
+    // Conference detection
+    if (/paper presentation|poster session|symposium|conference session/.test(bracketLower)) {
+      citation.type = 'conference';
+    }
+
+    // Dissertation detection
+    if (/doctoral dissertation|master'?s thesis/.test(bracketLower)) {
+      citation.type = 'dissertation';
+      // Extract institution from bracket: "[Doctoral dissertation, MIT]"
+      const instMatch = bracketMatch[1].match(/,\s*(.+)$/);
+      if (instMatch) {
+        citation.institution = instMatch[1].trim();
+      }
+    }
+  }
+
+  // 3. Report No. detection
+  const reportNoMatch = remaining.match(/\(Report No\.\s*([^)]+)\)/i);
+  if (reportNoMatch) {
+    citation.reportNumber = reportNoMatch[1].trim();
+    remaining = remaining.replace(reportNoMatch[0], '').trim();
+    if (citation.type === 'unknown') {
+      citation.type = 'report';
+    }
+  }
+
+  // 4. Split by periods to get segments
   const segments = splitByPeriods(remaining);
 
   if (segments.length > 0) {
@@ -159,109 +336,84 @@ function parseRemainingElements(afterYear: string, citation: ParsedCitation): vo
   }
 
   if (segments.length > 1) {
-    // The next segment likely contains source and possibly volume/issue/pages
     const sourceSegment = segments.slice(1).join('. ').trim();
 
-    // === CONFERENCE PROCEEDING / BOOK CHAPTER DETECTION ===
-    // Pattern: "In SourceName (pp. X-Y). Publisher, Location"
-    // Must check BEFORE journal patterns to avoid misclassification
-    const chapterMatch = sourceSegment.match(
-      /^In\s+(.+?)\s*\(pp\.\s*([\d–-]+)\)\.\s*(.+)$/i
-    );
-    if (chapterMatch) {
-      citation.source = `In ${chapterMatch[1].trim()}`;
-      citation.pages = chapterMatch[2].trim();
-      // Publisher info (e.g., "Springer, Berlin, Heidelberg")
-      // APA 7th: publisher name required, location not required
-      const publisherInfo = chapterMatch[3].trim().replace(/\.$/, '');
-      citation.publisher = publisherInfo.split(',')[0].trim();
-      citation.type = 'chapter';
+    // For conference type, remaining after title is conferenceName
+    if (citation.type === 'conference') {
+      // Clean up trailing/leading punctuation from conference name
+      const confName = sourceSegment.replace(/^\.\s*/, '').replace(/\.\s*$/, '').trim();
+      if (confName) {
+        citation.conferenceName = confName;
+      }
       return;
     }
 
-    // Also match: "In EditorName (Ed.), BookTitle (pp. X-Y). Publisher"
-    const editedChapterMatch = sourceSegment.match(
-      /^In\s+(.+?)\s*\((?:Eds?\.|Trans\.)\),?\s*(.+?)\s*\(pp\.\s*([\d–-]+)\)\.\s*(.+)$/i
-    );
-    if (editedChapterMatch) {
-      citation.source = `In ${editedChapterMatch[1]} (Ed.), ${editedChapterMatch[2].trim()}`;
-      citation.pages = editedChapterMatch[3].trim();
-      const publisherInfo = editedChapterMatch[4].trim().replace(/\.$/, '');
-      citation.publisher = publisherInfo.split(',')[0].trim();
-      citation.type = 'chapter';
+    // For dissertation type, remaining after title is databaseName
+    if (citation.type === 'dissertation') {
+      const dbName = sourceSegment.replace(/^\.\s*/, '').replace(/\.\s*$/, '').trim();
+      if (dbName) {
+        citation.databaseName = dbName;
+      }
       return;
     }
 
-    // Simple "In SourceName (pp. X-Y)" without publisher
-    const simpleChapterMatch = sourceSegment.match(
-      /^In\s+(.+?)\s*\(pp\.\s*([\d–-]+)\)/i
-    );
-    if (simpleChapterMatch) {
-      citation.source = `In ${simpleChapterMatch[1].trim()}`;
-      citation.pages = simpleChapterMatch[2].trim();
-      citation.type = 'chapter';
+    // For report type, extract publisher from source segment
+    if (citation.type === 'report') {
+      const cleanSource = sourceSegment.replace(/\.\s*$/, '').trim();
+      if (cleanSource) {
+        citation.publisher = cleanSource;
+        citation.source = cleanSource;
+      }
       return;
     }
 
-    // === JOURNAL ARTICLE PATTERNS ===
-
-    // Look for Vol. X, No. Y, pp. Z pattern (with prefixes - incorrect format)
-    const volNoMatch = sourceSegment.match(/^(.+?),?\s+Vol\.?\s*(\d+),?\s*No\.?\s*(\d+),?\s*pp\.?\s*([\d–-]+)?/i);
-    if (volNoMatch) {
-      citation.source = volNoMatch[1].trim();
-      citation.volume = 'Vol. ' + volNoMatch[2];
-      citation.issue = 'No. ' + volNoMatch[3];
-      citation.pages = volNoMatch[4] ? 'pp. ' + volNoMatch[4] : undefined;
-      citation.type = 'journal';
-      return;
+    // Try source patterns in order (first match wins)
+    for (const pattern of SOURCE_PATTERNS) {
+      const match = sourceSegment.match(pattern.regex);
+      if (match) {
+        pattern.extract(match, citation);
+        return;
+      }
     }
 
-    // Look for Vol. X(Y), pp. Z pattern (issue in parentheses, with prefixes)
-    const volIssueParenMatch = sourceSegment.match(/^(.+?),?\s+Vol\.?\s*(\d+)\((\d+)\),?\s*(?:pp\.?\s*)?([\d–-]+)?/i);
-    if (volIssueParenMatch) {
-      citation.source = volIssueParenMatch[1].trim();
-      citation.volume = 'Vol. ' + volIssueParenMatch[2];
-      citation.issue = volIssueParenMatch[3];
-      citation.pages = volIssueParenMatch[4] ? 'pp. ' + volIssueParenMatch[4] : undefined;
-      citation.type = 'journal';
-      return;
+    // Book detection: edition pattern "(Nth ed.)" in source segment or already extracted
+    const editionMatch = sourceSegment.match(/\((\d+)(?:st|nd|rd|th)\s+ed\.\)/i);
+    if (editionMatch) {
+      citation.edition = editionMatch[1];
     }
 
-    // Look for Vol. X, pp. Y pattern (no issue, with prefixes)
-    const volPpMatch = sourceSegment.match(/^(.+?),?\s+Vol\.?\s*(\d+),?\s*pp\.?\s*([\d–-]+)?/i);
-    if (volPpMatch) {
-      citation.source = volPpMatch[1].trim();
-      citation.volume = 'Vol. ' + volPpMatch[2];
-      citation.pages = volPpMatch[3] ? 'pp. ' + volPpMatch[3] : undefined;
-      citation.type = 'journal';
-      return;
-    }
+    // Enhanced book detection: check for edition (in segment or pre-extracted), Press, Publisher, Books keywords
+    const hasEdition = !!editionMatch || !!citation.edition;
+    const hasBookKeyword = /Press|Publisher|Books/.test(sourceSegment);
 
-    // Look for volume(issue), pages pattern - typical of journal articles (correct format)
-    const journalMatch = sourceSegment.match(/^(.+?),?\s+(\d+)\((\d+)\),?\s*([\d–-]+)?/);
-    if (journalMatch) {
-      citation.source = journalMatch[1].trim();
-      citation.volume = journalMatch[2];
-      citation.issue = journalMatch[3];
-      citation.pages = journalMatch[4];
-      citation.type = 'journal';
-      return;
-    }
-
-    // Look for volume, pages pattern (no issue, correct format)
-    const volumeMatch = sourceSegment.match(/^(.+?),?\s+(\d+),?\s*([\d–-]+)?/);
-    if (volumeMatch) {
-      citation.source = volumeMatch[1].trim();
-      citation.volume = volumeMatch[2];
-      citation.pages = volumeMatch[3];
-      citation.type = 'journal';
-      return;
-    }
-
-    // Look for publisher and location pattern (books)
-    const bookMatch = sourceSegment.match(/^(.+?)(?:\.\s*(.+?))$/);
-    if (bookMatch && (sourceSegment.includes('Press') || sourceSegment.includes('Publisher') || sourceSegment.includes('Books'))) {
-      citation.source = sourceSegment.trim();
+    if (hasEdition || hasBookKeyword) {
+      // Extract publisher: text after edition or after last period
+      let bookSource = sourceSegment;
+      if (editionMatch) {
+        // Title (Nth ed.). Publisher — edition still in sourceSegment
+        const edFullMatch = sourceSegment.match(/^(.+?)\s*\(\d+(?:st|nd|rd|th)\s+ed\.\)\.\s*(.+?)\.?\s*$/i);
+        if (edFullMatch) {
+          bookSource = edFullMatch[1].trim();
+          citation.publisher = edFullMatch[2].trim().replace(/\.$/, '');
+        }
+      } else if (citation.edition && !editionMatch) {
+        // Edition already pre-extracted; sourceSegment is just publisher or "title. publisher"
+        const pubMatch = sourceSegment.match(/^(.+?)\.?\s*$/);
+        if (pubMatch) {
+          const cleaned = pubMatch[1].trim().replace(/\.$/, '');
+          citation.publisher = cleaned;
+          // Use the title as book source (already in citation.title)
+          bookSource = citation.title;
+        }
+      } else {
+        // Simple: look for last period-separated segment as publisher
+        const bookMatch = sourceSegment.match(/^(.+?)\.\s*(.+?)\.?\s*$/);
+        if (bookMatch) {
+          bookSource = bookMatch[1].trim();
+          citation.publisher = bookMatch[2].trim().replace(/\.$/, '');
+        }
+      }
+      citation.source = bookSource;
       citation.type = 'book';
       return;
     }
@@ -275,6 +427,11 @@ function parseRemainingElements(afterYear: string, citation: ParsedCitation): vo
     } else if (citation.url && !citation.doi) {
       citation.type = 'web';
     }
+  }
+
+  // Final fallback: if we have a URL but no DOI and type is still unknown, it's web
+  if (citation.type === 'unknown' && citation.url && !citation.doi) {
+    citation.type = 'web';
   }
 }
 

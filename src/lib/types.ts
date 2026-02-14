@@ -1,6 +1,7 @@
 export interface Author {
   lastName: string;
   initials: string; // e.g., "F. M."
+  isGroupAuthor?: boolean; // true for organizational/group authors
 }
 
 export interface ParsedCitation {
@@ -17,7 +18,15 @@ export interface ParsedCitation {
   publisher?: string;
   editors?: Author[];
   edition?: string;
-  type: 'journal' | 'book' | 'chapter' | 'web' | 'unknown';
+  type: 'journal' | 'book' | 'chapter' | 'web' | 'report' | 'conference' | 'dissertation' | 'unknown';
+  fullDate?: string; // e.g., "2024, March 15" (newspapers/blogs/conferences)
+  yearSuffix?: string; // e.g., "a", "b" (same author, same year disambiguation)
+  reportNumber?: string; // e.g., "Report No. 2024-01"
+  bracketType?: string; // e.g., "[Paper presentation]", "[Doctoral dissertation, MIT]"
+  conferenceName?: string; // conference name + location
+  institution?: string; // degree-granting institution for dissertations
+  databaseName?: string; // e.g., "ProQuest Dissertations"
+  isGroupAuthor?: boolean; // true when all authors are organizational
 }
 
 export interface ValidationError {
@@ -68,4 +77,7 @@ export interface CrossRefWork {
   publisher?: string;
   editors?: Author[];
   edition?: string;
+  reportNumber?: string;
+  conferenceName?: string;
+  institution?: string;
 }

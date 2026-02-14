@@ -81,6 +81,130 @@ describe('reconstructCitation', () => {
     expect(result).toContain('pp. 20\u201331');
     expect(result).toContain('Publisher.');
   });
+
+  it('reconstructs with fullDate', () => {
+    const citation: ParsedCitation = {
+      raw: '',
+      authors: [{ lastName: 'Smith', initials: 'J.' }],
+      year: '2024',
+      fullDate: '2024, March 15',
+      title: 'Talk title',
+      source: '',
+      type: 'conference',
+      bracketType: 'Paper presentation',
+      conferenceName: 'APA Conference, DC',
+    };
+
+    const result = reconstructCitation(citation);
+    expect(result).toContain('(2024, March 15).');
+    expect(result).toContain('[Paper presentation]');
+    expect(result).toContain('APA Conference, DC.');
+  });
+
+  it('reconstructs with yearSuffix', () => {
+    const citation: ParsedCitation = {
+      raw: '',
+      authors: [{ lastName: 'Smith', initials: 'J.' }],
+      year: '2024',
+      yearSuffix: 'a',
+      title: 'First article',
+      source: 'Journal',
+      volume: '1',
+      issue: '1',
+      pages: '1\u201310',
+      type: 'journal',
+    };
+
+    const result = reconstructCitation(citation);
+    expect(result).toContain('(2024a).');
+  });
+
+  it('reconstructs a group author', () => {
+    const citation: ParsedCitation = {
+      raw: '',
+      authors: [{ lastName: 'World Health Organization', initials: '', isGroupAuthor: true }],
+      year: '2024',
+      title: 'Global health report',
+      source: 'WHO Press',
+      type: 'book',
+      isGroupAuthor: true,
+    };
+
+    const result = reconstructCitation(citation);
+    expect(result).toContain('World Health Organization');
+    expect(result).not.toContain(', .');
+  });
+
+  it('reconstructs a report', () => {
+    const citation: ParsedCitation = {
+      raw: '',
+      authors: [{ lastName: 'Author', initials: 'A.' }],
+      year: '2024',
+      title: 'Safety review',
+      source: '',
+      type: 'report',
+      reportNumber: 'DOT-HS-812-345',
+      publisher: 'NHTSA',
+    };
+
+    const result = reconstructCitation(citation);
+    expect(result).toContain('*Safety review* (Report No. DOT-HS-812-345).');
+    expect(result).toContain('NHTSA.');
+  });
+
+  it('reconstructs a conference presentation', () => {
+    const citation: ParsedCitation = {
+      raw: '',
+      authors: [{ lastName: 'Lee', initials: 'S.' }],
+      year: '2023',
+      fullDate: '2023, May 5',
+      title: 'New findings',
+      source: '',
+      type: 'conference',
+      bracketType: 'Poster session',
+      conferenceName: 'Cognitive Science Conference, Berlin, Germany',
+    };
+
+    const result = reconstructCitation(citation);
+    expect(result).toContain('(2023, May 5).');
+    expect(result).toContain('New findings [Poster session].');
+    expect(result).toContain('Cognitive Science Conference, Berlin, Germany.');
+  });
+
+  it('reconstructs a dissertation', () => {
+    const citation: ParsedCitation = {
+      raw: '',
+      authors: [{ lastName: 'Johnson', initials: 'M.' }],
+      year: '2023',
+      title: 'Machine learning approaches',
+      source: '',
+      type: 'dissertation',
+      bracketType: 'Doctoral dissertation, MIT',
+      institution: 'MIT',
+      databaseName: 'ProQuest Dissertations',
+    };
+
+    const result = reconstructCitation(citation);
+    expect(result).toContain('*Machine learning approaches* [Doctoral dissertation, MIT].');
+    expect(result).toContain('ProQuest Dissertations.');
+  });
+
+  it('reconstructs a book with edition', () => {
+    const citation: ParsedCitation = {
+      raw: '',
+      authors: [{ lastName: 'Author', initials: 'A.' }],
+      year: '2023',
+      title: 'Psychology of learning',
+      source: 'Psychology of learning',
+      type: 'book',
+      edition: '4',
+      publisher: 'Academic Press',
+    };
+
+    const result = reconstructCitation(citation);
+    expect(result).toContain('*Psychology of learning* (4th ed.).');
+    expect(result).toContain('Academic Press.');
+  });
 });
 
 describe('calculateScore', () => {

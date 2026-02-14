@@ -13,6 +13,36 @@ function toOrdinal(n: string): string {
   return `${num}${suffix}`;
 }
 
+/** Rule → citation field mapping for data-driven auto-fixes */
+const FIELD_MAP: Record<string, keyof ParsedCitation> = {
+  yearFormat: 'year',
+  titleCase: 'title',
+  doiFormat: 'doi',
+  volumeFormat: 'volume',
+  issueFormat: 'issue',
+  pageFormat: 'pages',
+  journalNameCase: 'source',
+  conferenceNameCase: 'source',
+  publisherLocation: 'publisher',
+  inPrefix: 'source',
+  terminalPeriod: 'raw',
+};
+
+/** Auto-fix description generators per rule */
+const FIX_DESCRIPTIONS: Record<string, (error: ValidationError) => string> = {
+  yearFormat: (e) => `Corrected year format to "${e.suggested}"`,
+  titleCase: () => 'Converted title to sentence case (verify proper nouns)',
+  doiFormat: (e) => `Corrected DOI format to "${e.suggested}"`,
+  volumeFormat: () => 'Removed "Vol." prefix from volume',
+  issueFormat: () => 'Removed "No." prefix from issue',
+  pageFormat: (e) => e.message.includes('pp.') ? 'Removed "pp." prefix' : 'Changed hyphen to en dash',
+  journalNameCase: () => 'Converted journal name to Title Case',
+  conferenceNameCase: () => 'Converted conference/proceedings name to Title Case',
+  publisherLocation: () => 'Removed publisher location (APA 7th change)',
+  inPrefix: () => 'Added "In " prefix to chapter source',
+  terminalPeriod: () => 'Added terminal period',
+};
+
 /**
  * Apply all auto-fixable corrections to a citation
  */
@@ -46,150 +76,49 @@ export function applyAutoFixes(
       continue;
     }
 
-    // Apply auto-fixable corrections
-    switch (error.rule) {
-      case 'authorFormat':
-        if (error.suggested && error.field === 'authors') {
-          // Find and fix the specific author
-          const authorIndex = parseInt(error.message.match(/Author (\d+)/)?.[1] || '0') - 1;
-          if (authorIndex >= 0 && authorIndex < fixedCitation.authors.length) {
-            const oldInitials = fixedCitation.authors[authorIndex].initials;
-            fixedCitation.authors[authorIndex].initials = error.suggested;
-            autoFixes.push({
-              rule: 'authorFormat',
-              field: 'authors',
-              original: oldInitials,
-              fixed: error.suggested,
-              description: `Corrected initials format to "${error.suggested}"`,
-            });
-          }
-        }
-        break;
-
-      case 'yearFormat':
-        if (error.suggested) {
-          const oldYear = fixedCitation.year;
-          fixedCitation.year = error.suggested;
+    // Special case: authorFormat (needs index parsing)
+    if (error.rule === 'authorFormat') {
+      if (error.suggested && error.field === 'authors') {
+        const authorIndex = parseInt(error.message.match(/Author (\d+)/)?.[1] || '0') - 1;
+        if (authorIndex >= 0 && authorIndex < fixedCitation.authors.length) {
+          const oldInitials = fixedCitation.authors[authorIndex].initials;
+          fixedCitation.authors[authorIndex].initials = error.suggested;
           autoFixes.push({
-            rule: 'yearFormat',
-            field: 'year',
-            original: oldYear,
+            rule: 'authorFormat',
+            field: 'authors',
+            original: oldInitials,
             fixed: error.suggested,
-            description: `Corrected year format to "${error.suggested}"`,
+            description: `Corrected initials format to "${error.suggested}"`,
           });
         }
-        break;
+      }
+      continue;
+    }
 
-      case 'titleCase':
-        if (error.suggested) {
-          const oldTitle = fixedCitation.title;
-          fixedCitation.title = error.suggested;
-          autoFixes.push({
-            rule: 'titleCase',
-            field: 'title',
-            original: oldTitle,
-            fixed: error.suggested,
-            description: 'Converted title to sentence case (verify proper nouns)',
-          });
-        }
-        break;
+    // Special case: ampersand (handled during reconstruction)
+    if (error.rule === 'ampersand') {
+      autoFixes.push({
+        rule: 'ampersand',
+        field: 'authors',
+        original: 'and',
+        fixed: '&',
+        description: 'Changed "and" to "&" before last author',
+      });
+      continue;
+    }
 
-      case 'doiFormat':
-        if (error.suggested) {
-          const oldDOI = fixedCitation.doi || '';
-          fixedCitation.doi = error.suggested;
-          autoFixes.push({
-            rule: 'doiFormat',
-            field: 'doi',
-            original: oldDOI,
-            fixed: error.suggested,
-            description: `Corrected DOI format to "${error.suggested}"`,
-          });
-        }
-        break;
-
-      case 'volumeFormat':
-        if (error.suggested) {
-          const oldVolume = fixedCitation.volume || '';
-          fixedCitation.volume = error.suggested;
-          autoFixes.push({
-            rule: 'volumeFormat',
-            field: 'volume',
-            original: oldVolume,
-            fixed: error.suggested,
-            description: 'Removed "Vol." prefix from volume',
-          });
-        }
-        break;
-
-      case 'issueFormat':
-        if (error.suggested) {
-          const oldIssue = fixedCitation.issue || '';
-          fixedCitation.issue = error.suggested;
-          autoFixes.push({
-            rule: 'issueFormat',
-            field: 'issue',
-            original: oldIssue,
-            fixed: error.suggested,
-            description: 'Removed "No." prefix from issue',
-          });
-        }
-        break;
-
-      case 'pageFormat':
-        if (error.suggested) {
-          const oldPages = fixedCitation.pages || '';
-          fixedCitation.pages = error.suggested;
-          autoFixes.push({
-            rule: 'pageFormat',
-            field: 'pages',
-            original: oldPages,
-            fixed: error.suggested,
-            description: error.message.includes('pp.')
-              ? 'Removed "pp." prefix'
-              : 'Changed hyphen to en dash',
-          });
-        }
-        break;
-
-      case 'journalNameCase':
-        if (error.suggested) {
-          const oldSource = fixedCitation.source;
-          fixedCitation.source = error.suggested;
-          autoFixes.push({
-            rule: 'journalNameCase',
-            field: 'source',
-            original: oldSource,
-            fixed: error.suggested,
-            description: 'Converted journal name to Title Case',
-          });
-        }
-        break;
-
-      case 'conferenceNameCase':
-        if (error.suggested) {
-          const oldSource = fixedCitation.source;
-          fixedCitation.source = error.suggested;
-          autoFixes.push({
-            rule: 'conferenceNameCase',
-            field: 'source',
-            original: oldSource,
-            fixed: error.suggested,
-            description: 'Converted conference/proceedings name to Title Case',
-          });
-        }
-        break;
-
-      case 'ampersand':
-        // This is handled during reconstruction
-        autoFixes.push({
-          rule: 'ampersand',
-          field: 'authors',
-          original: 'and',
-          fixed: '&',
-          description: 'Changed "and" to "&" before last author',
-        });
-        break;
+    // Data-driven field fixes
+    const field = FIELD_MAP[error.rule];
+    if (field && error.suggested) {
+      const original = (fixedCitation[field] as string) || '';
+      (fixedCitation as unknown as Record<string, unknown>)[field] = error.suggested;
+      autoFixes.push({
+        rule: error.rule,
+        field,
+        original,
+        fixed: error.suggested,
+        description: FIX_DESCRIPTIONS[error.rule]?.(error) ?? error.message,
+      });
     }
   }
 
@@ -213,16 +142,18 @@ export function reconstructCitation(citation: ParsedCitation): string {
   if (citation.authors.length > 0) {
     const authorStrings = citation.authors.map((author, index) => {
       if (citation.authors.length > 20 && index === 19) {
-        // Ellipsis case for 21+ authors
         return '...';
       }
       if (citation.authors.length > 20 && index > 19 && index < citation.authors.length - 1) {
-        return null; // Skip middle authors
+        return null;
+      }
+      // Group authors: just the name, no initials
+      if (author.isGroupAuthor) {
+        return author.lastName;
       }
       return `${author.lastName}, ${author.initials}`;
     }).filter(Boolean);
 
-    // Join authors with commas and &
     let authorsString: string;
     if (authorStrings.length === 1) {
       authorsString = authorStrings[0] as string;
@@ -237,14 +168,61 @@ export function reconstructCitation(citation: ParsedCitation): string {
     parts.push(authorsString);
   }
 
-  // Year
+  // Year (with fullDate and yearSuffix support)
   if (citation.year) {
-    parts.push(`(${citation.year}).`);
+    if (citation.fullDate) {
+      parts.push(`(${citation.fullDate}).`);
+    } else if (citation.yearSuffix) {
+      parts.push(`(${citation.year}${citation.yearSuffix}).`);
+    } else {
+      parts.push(`(${citation.year}).`);
+    }
   }
 
   // Title
   if (citation.title) {
     parts.push(citation.title + '.');
+  }
+
+  // For report/conference/dissertation, handle reconstruction even without source
+  if (!citation.source && ['report', 'conference', 'dissertation'].includes(citation.type)) {
+    if (citation.type === 'report') {
+      let reportPart = `*${citation.title}*`;
+      if (citation.reportNumber) {
+        reportPart = `*${citation.title}* (Report No. ${citation.reportNumber})`;
+      }
+      reportPart += '.';
+      if (citation.publisher) {
+        reportPart += ` ${citation.publisher}.`;
+      }
+      const titleIdx = parts.findIndex(p => p === citation.title + '.');
+      if (titleIdx >= 0) parts.splice(titleIdx, 1);
+      parts.push(reportPart);
+    } else if (citation.type === 'conference') {
+      let confPart = citation.title;
+      if (citation.bracketType) {
+        confPart += ` [${citation.bracketType}]`;
+      }
+      confPart += '.';
+      if (citation.conferenceName) {
+        confPart += ` ${citation.conferenceName}.`;
+      }
+      const titleIdx = parts.findIndex(p => p === citation.title + '.');
+      if (titleIdx >= 0) parts.splice(titleIdx, 1);
+      parts.push(confPart);
+    } else if (citation.type === 'dissertation') {
+      let dissPart = `*${citation.title}*`;
+      if (citation.bracketType) {
+        dissPart += ` [${citation.bracketType}]`;
+      }
+      dissPart += '.';
+      if (citation.databaseName) {
+        dissPart += ` ${citation.databaseName}.`;
+      }
+      const titleIdx = parts.findIndex(p => p === citation.title + '.');
+      if (titleIdx >= 0) parts.splice(titleIdx, 1);
+      parts.push(dissPart);
+    }
   }
 
   // Source (journal/publisher) with volume/issue/pages for journals
@@ -323,7 +301,58 @@ export function reconstructCitation(citation: ParsedCitation): string {
 
       parts.push(chapterPart);
     } else if (citation.type === 'book') {
-      parts.push(`*${citation.source}*.`);
+      // Book: *Title* (Nth ed.). Publisher.
+      let bookPart = `*${citation.source}*`;
+      if (citation.edition) {
+        bookPart += ` (${toOrdinal(citation.edition)} ed.)`;
+      }
+      bookPart += '.';
+      if (citation.publisher) {
+        bookPart += ` ${citation.publisher}.`;
+      }
+      parts.push(bookPart);
+    } else if (citation.type === 'report') {
+      // Report: *Title* (Report No. xxx). Publisher.
+      let reportPart = `*${citation.title}*`;
+      if (citation.reportNumber) {
+        reportPart = `*${citation.title}* (Report No. ${citation.reportNumber})`;
+      }
+      reportPart += '.';
+      if (citation.publisher || citation.source) {
+        reportPart += ` ${citation.publisher || citation.source}.`;
+      }
+      // Remove the title from earlier since we included it here
+      const titleIdx = parts.findIndex(p => p === citation.title + '.');
+      if (titleIdx >= 0) parts.splice(titleIdx, 1);
+      parts.push(reportPart);
+    } else if (citation.type === 'conference') {
+      // Conference: Title [Paper presentation]. Conference Name, City, Country.
+      let confPart = citation.title;
+      if (citation.bracketType) {
+        confPart += ` [${citation.bracketType}]`;
+      }
+      confPart += '.';
+      if (citation.conferenceName) {
+        confPart += ` ${citation.conferenceName}.`;
+      }
+      // Remove the title from earlier since we included it here
+      const titleIdx = parts.findIndex(p => p === citation.title + '.');
+      if (titleIdx >= 0) parts.splice(titleIdx, 1);
+      parts.push(confPart);
+    } else if (citation.type === 'dissertation') {
+      // Dissertation: *Title* [Doctoral dissertation, Institution]. Database.
+      let dissPart = `*${citation.title}*`;
+      if (citation.bracketType) {
+        dissPart += ` [${citation.bracketType}]`;
+      }
+      dissPart += '.';
+      if (citation.databaseName) {
+        dissPart += ` ${citation.databaseName}.`;
+      }
+      // Remove the title from earlier since we included it here
+      const titleIdx = parts.findIndex(p => p === citation.title + '.');
+      if (titleIdx >= 0) parts.splice(titleIdx, 1);
+      parts.push(dissPart);
     } else {
       parts.push(citation.source);
     }
@@ -381,57 +410,41 @@ export function calculateScore(errors: ValidationError[], autoFixes: AutoFix[]):
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-/**
- * Generate helpful hints for manual fixes
- */
+/** Manual fix hints per rule */
+const MANUAL_FIX_HINTS: Record<string, string | ((error: ValidationError) => string)> = {
+  authorFormat: (error) => {
+    if (error.message.includes('missing initials') || error.message.includes('organization name')) {
+      return 'Add first and middle initials in format "F. M." after the last name, or provide the full organization name for group authors.';
+    }
+    if (error.message.includes('missing last name')) {
+      return "Provide the author's last name.";
+    }
+    return 'Format author as: LastName, F. M.';
+  },
+  yearFormat: 'Provide a 4-digit year (YYYY), "n.d." for no date, or "in press" in parentheses.',
+  doiPresence: "Search for the DOI on CrossRef or the publisher's website. If unavailable, this is acceptable.",
+  doiFormat: 'DOI should be in format: https://doi.org/10.xxxx/xxxxx',
+  titleCase: 'Verify proper nouns are still capitalized correctly in the converted title.',
+  volumeFormat: 'Volume should be just the number (e.g., "23" not "Vol. 23").',
+  issueFormat: 'Issue should be just the number in parentheses (e.g., "(4)" not "No. 4").',
+  pageFormat: 'Use en dash (–) for page ranges and remove "pp." prefix for journal articles.',
+  journalNameCase: 'Journal names should use Title Case (e.g., "Journal of Educational Psychology" not "journal of educational psychology").',
+  conferenceNameCase: 'Conference/proceedings names are proper nouns and should use Title Case (e.g., "International Conference on Information Systems").',
+  chapterEditors: "Look up the book on the publisher's website or Google Books to find the editor(s). Format: In F. M. Editor (Ed.), for one editor, or In F. Editor & G. Editor (Eds.), for multiple.",
+  ampersand: 'Use ampersand (&) before the last author in reference lists.',
+  typeMismatch: 'CrossRef metadata indicates this citation is a different type than detected. Verify the citation format matches the actual publication type.',
+  publisherRequired: 'Add the publisher name after the title/edition.',
+  fullDateRequired: 'Conference presentations require the full date including month and day(s) (e.g., 2024, March 15).',
+  editionFormat: 'Edition should be a number formatted as ordinal (e.g., 2nd ed.).',
+  bracketType: 'Add a type descriptor in brackets after the title (e.g., [Paper presentation], [Doctoral dissertation, University Name]).',
+  conferenceInfo: 'Add the conference name and location after the bracket descriptor (e.g., Annual Meeting of APA, Washington, DC, United States).',
+  dissertationInfo: 'Include the institution name in brackets (e.g., [Doctoral dissertation, Massachusetts Institute of Technology]).',
+  reportNumber: 'Include the report number if available (e.g., Report No. 2024-01) in parentheses after the title.',
+  inPrefix: 'Chapter source should start with "In " followed by editors and book title.',
+};
+
 function getManualFixHint(error: ValidationError): string {
-  switch (error.rule) {
-    case 'authorFormat':
-      if (error.message.includes('missing initials')) {
-        return 'Add first and middle initials in format "F. M." after the last name.';
-      }
-      if (error.message.includes('missing last name')) {
-        return 'Provide the author\'s last name.';
-      }
-      return 'Format author as: LastName, F. M.';
-
-    case 'yearFormat':
-      return 'Provide a 4-digit year (YYYY) in parentheses.';
-
-    case 'doiPresence':
-      return 'Search for the DOI on CrossRef or the publisher\'s website. If unavailable, this is acceptable.';
-
-    case 'doiFormat':
-      return 'DOI should be in format: https://doi.org/10.xxxx/xxxxx';
-
-    case 'titleCase':
-      return 'Verify proper nouns are still capitalized correctly in the converted title.';
-
-    case 'volumeFormat':
-      return 'Volume should be just the number (e.g., "23" not "Vol. 23").';
-
-    case 'issueFormat':
-      return 'Issue should be just the number in parentheses (e.g., "(4)" not "No. 4").';
-
-    case 'pageFormat':
-      return 'Use en dash (–) for page ranges and remove "pp." prefix for journal articles.';
-
-    case 'journalNameCase':
-      return 'Journal names should use Title Case (e.g., "Journal of Educational Psychology" not "journal of educational psychology").';
-
-    case 'conferenceNameCase':
-      return 'Conference/proceedings names are proper nouns and should use Title Case (e.g., "International Conference on Information Systems").';
-
-    case 'chapterEditors':
-      return 'Look up the book on the publisher\'s website or Google Books to find the editor(s). Format: In F. M. Editor (Ed.), for one editor, or In F. Editor & G. Editor (Eds.), for multiple.';
-
-    case 'ampersand':
-      return 'Use ampersand (&) before the last author in reference lists.';
-
-    case 'typeMismatch':
-      return 'CrossRef metadata indicates this citation is a different type than detected. Verify the citation format matches the actual publication type.';
-
-    default:
-      return error.message;
-  }
+  const hint = MANUAL_FIX_HINTS[error.rule];
+  if (!hint) return error.message;
+  return typeof hint === 'function' ? hint(error) : hint;
 }

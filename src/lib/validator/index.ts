@@ -1,6 +1,6 @@
 import { ParsedCitation, ValidationResult, ValidationError, CrossRefWork } from '../types';
 import { parseCitation, parseCitations } from './parser';
-import { ALL_RULES } from './rules';
+import { ALL_RULES, getRulesForType } from './rules';
 import { applyAutoFixes, calculateScore } from './auto-fix';
 import { searchByTitle, titleSimilarity } from '../crossref/client';
 import { randomUUID } from 'crypto';
@@ -9,7 +9,6 @@ import { randomUUID } from 'crypto';
  * Rate limiting helper for CrossRef API calls
  */
 class RateLimiter {
-  private queue: Array<() => Promise<any>> = [];
   private running = 0;
   private readonly maxConcurrent = 3;
 
@@ -36,8 +35,14 @@ function mapCrossRefType(crossRefType: string): ParsedCitation['type'] {
   switch (crossRefType) {
     case 'journal-article': return 'journal';
     case 'book-chapter': return 'chapter';
-    case 'proceedings-article': return 'chapter';
-    case 'book': return 'book';
+    case 'proceedings-article': return 'conference';
+    case 'book':
+    case 'monograph':
+    case 'edited-book':
+    case 'reference-book': return 'book';
+    case 'report': return 'report';
+    case 'dissertation': return 'dissertation';
+    case 'posted-content': return 'web';
     default: return 'unknown';
   }
 }
@@ -81,6 +86,25 @@ function correctCitationWithCrossRef(
   // Apply type correction
   corrected.type = crossRefType;
 
+  // Handle journal → conference correction
+  if (citation.type === 'journal' && crossRefType === 'conference') {
+    corrected.volume = undefined;
+    corrected.issue = undefined;
+    if (crossRefWork.conferenceName) {
+      corrected.conferenceName = crossRefWork.conferenceName;
+    }
+  }
+
+  // Handle unknown → report correction
+  if (citation.type === 'unknown' && crossRefType === 'report') {
+    if (crossRefWork.reportNumber) {
+      corrected.reportNumber = crossRefWork.reportNumber;
+    }
+    if (crossRefWork.publisher) {
+      corrected.publisher = crossRefWork.publisher;
+    }
+  }
+
   // Handle journal → chapter correction
   if (citation.type === 'journal' && crossRefType === 'chapter') {
     // Volume was likely misinterpreted as start page number
@@ -117,6 +141,23 @@ function correctCitationWithCrossRef(
   }
 
   return { corrected, typeChanged: true };
+}
+
+/**
+ * Run validation rules, apply auto-fixes, calculate score, and assemble result
+ */
+function buildValidationResult(citation: ParsedCitation, extraErrors?: ValidationError[]): ValidationResult {
+  const errors: ValidationError[] = [];
+  const rules = getRulesForType(citation.type);
+  for (const rule of rules) {
+    errors.push(...rule(citation));
+  }
+  if (extraErrors) {
+    errors.push(...extraErrors);
+  }
+  const { fixedCitation, autoFixes, manualFixes } = applyAutoFixes(citation, errors);
+  const score = calculateScore(errors, autoFixes);
+  return { id: randomUUID(), citation, errors, autoFixes, manualFixes, fixedCitation, score };
 }
 
 /**
@@ -161,16 +202,10 @@ export async function validateCitation(
     }
   }
 
-  // Step 3: Run validation rules (with corrected type if applicable)
-  const errors: ValidationError[] = [];
-  for (const rule of ALL_RULES) {
-    const ruleErrors = rule(citation);
-    errors.push(...ruleErrors);
-  }
-
-  // Add type mismatch info if CrossRef indicated different type
+  // Step 3+4+5: Validate, fix, score
+  const extraErrors: ValidationError[] = [];
   if (typeChanged) {
-    errors.push({
+    extraErrors.push({
       rule: 'typeMismatch',
       field: 'type',
       message: `CrossRef indicates this is a ${citation.type === 'chapter' ? 'book chapter/proceedings' : citation.type}, not a journal article. Citation format has been corrected.`,
@@ -180,12 +215,11 @@ export async function validateCitation(
     });
   }
 
-  // Step 4: Apply auto-fixes
-  const { fixedCitation, autoFixes, manualFixes } = applyAutoFixes(citation, errors);
+  const result = buildValidationResult(citation, extraErrors.length > 0 ? extraErrors : undefined);
 
   // Add CrossRef page completion to auto-fixes report
   if (originalPages !== citation.pages && citation.pages) {
-    autoFixes.push({
+    result.autoFixes.push({
       rule: 'pageCompletion',
       field: 'pages',
       original: originalPages || '(missing)',
@@ -194,18 +228,7 @@ export async function validateCitation(
     });
   }
 
-  // Step 5: Calculate score
-  const score = calculateScore(errors, autoFixes);
-
-  return {
-    id: randomUUID(),
-    citation,
-    errors,
-    autoFixes,
-    manualFixes,
-    fixedCitation,
-    score,
-  };
+  return result;
 }
 
 /**
@@ -240,31 +263,12 @@ export async function validateCitations(
  * Useful for quick local-only validation
  */
 export function validateCitationWithoutCrossRef(text: string): ValidationResult {
-  const citation = parseCitation(text);
-
-  const errors: ValidationError[] = [];
-  for (const rule of ALL_RULES) {
-    const ruleErrors = rule(citation);
-    errors.push(...ruleErrors);
-  }
-
-  const { fixedCitation, autoFixes, manualFixes } = applyAutoFixes(citation, errors);
-  const score = calculateScore(errors, autoFixes);
-
-  return {
-    id: randomUUID(),
-    citation,
-    errors,
-    autoFixes,
-    manualFixes,
-    fixedCitation,
-    score,
-  };
+  return buildValidationResult(parseCitation(text));
 }
 
 // Re-export types for convenience
 export type { ParsedCitation, ValidationResult, ValidationError } from '../types';
 export { parseCitation, parseCitations } from './parser';
-export { ALL_RULES } from './rules';
+export { ALL_RULES, ROUTED_RULES, getRulesForType } from './rules';
 export { applyAutoFixes, calculateScore } from './auto-fix';
 export { searchByTitle, lookupByDOI } from '../crossref/client';

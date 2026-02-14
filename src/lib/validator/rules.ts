@@ -41,11 +41,27 @@ export function isLikelyTitleCase(title: string): boolean {
 
 /**
  * Rule: Check author format follows "Surname, F. M." pattern
+ * Skips initials check for group/organizational authors
  */
 export function checkAuthorFormat(citation: ParsedCitation): ValidationError[] {
   const errors: ValidationError[] = [];
 
   citation.authors.forEach((author, index) => {
+    // Group authors only need a name, no initials
+    if (author.isGroupAuthor) {
+      if (!author.lastName || author.lastName.trim() === '') {
+        errors.push({
+          rule: 'authorFormat',
+          field: 'authors',
+          message: `Author ${index + 1} missing organization name`,
+          severity: 'error',
+          original: JSON.stringify(author),
+          autoFixable: false,
+        });
+      }
+      return;
+    }
+
     // Check if initials have proper spacing and periods
     const initialsPattern = /^([A-Z]\.\s)*[A-Z]\.$/;
 
@@ -94,11 +110,12 @@ export function checkAuthorFormat(citation: ParsedCitation): ValidationError[] {
 }
 
 /**
- * Rule: Check year format is (YYYY).
+ * Rule: Check year format is (YYYY), (n.d.), (in press), or (YYYYa).
  */
 export function checkYearFormat(citation: ParsedCitation): ValidationError[] {
   const errors: ValidationError[] = [];
-  const yearPattern = /^\d{4}$/;
+  // Accept: 4-digit year, "n.d.", "in press"
+  const validPattern = /^\d{4}$|^n\.d\.$|^in press$/;
 
   if (!citation.year) {
     errors.push({
@@ -109,14 +126,14 @@ export function checkYearFormat(citation: ParsedCitation): ValidationError[] {
       original: '',
       autoFixable: false,
     });
-  } else if (!yearPattern.test(citation.year)) {
+  } else if (!validPattern.test(citation.year)) {
     const yearMatch = citation.year.match(/\d{4}/);
     const suggested = yearMatch ? yearMatch[0] : '';
 
     errors.push({
       rule: 'yearFormat',
       field: 'year',
-      message: 'Year should be 4-digit format (YYYY)',
+      message: 'Year should be 4-digit format (YYYY), "n.d.", or "in press"',
       severity: 'error',
       original: citation.year,
       suggested,
@@ -389,22 +406,6 @@ export function checkAmpersand(citation: ParsedCitation): ValidationError[] {
 }
 
 /**
- * Rule: Check for unwanted "Vol." prefix
- */
-export function checkVolPrefix(citation: ParsedCitation): ValidationError[] {
-  // This is covered by checkVolumeIssueFormat
-  return checkVolumeIssueFormat(citation).filter(e => e.field === 'volume');
-}
-
-/**
- * Rule: Check for unwanted "pp." prefix in journal articles
- */
-export function checkPpPrefix(citation: ParsedCitation): ValidationError[] {
-  // This is covered by checkPageFormat
-  return checkPageFormat(citation).filter(e => e.message.includes('pp.'));
-}
-
-/**
  * Minor words that should NOT be capitalized in Title Case
  * (unless they are the first or last word)
  */
@@ -549,24 +550,311 @@ export function checkChapterEditors(citation: ParsedCitation): ValidationError[]
   return errors;
 }
 
+// ── NEW RULES (10.1-10.6 extension) ──────────────────────────────────
+
+/**
+ * Rule: Check citation ends with a period (DOI/URL endings exempt)
+ */
+export function checkTerminalPeriod(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const raw = citation.raw.trim();
+  if (!raw) return errors;
+
+  // DOI or URL at end is acceptable without trailing period
+  if (/https?:\/\/[^\s]+$/.test(raw) || /doi\.org\/[^\s]+$/.test(raw)) {
+    return errors;
+  }
+
+  if (!raw.endsWith('.')) {
+    errors.push({
+      rule: 'terminalPeriod',
+      field: 'raw',
+      message: 'Citation should end with a period',
+      severity: 'warning',
+      original: raw.slice(-20),
+      suggested: raw + '.',
+      autoFixable: true,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: Conference citations should include full date (month/day)
+ */
+export function checkFullDateRequired(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (citation.type !== 'conference') return errors;
+
+  if (!citation.fullDate) {
+    errors.push({
+      rule: 'fullDateRequired',
+      field: 'year',
+      message: 'Conference presentations should include the full date (year, month day–day)',
+      severity: 'warning',
+      original: citation.year || '',
+      autoFixable: false,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: Books, chapters, and reports should have a publisher
+ */
+export function checkPublisherRequired(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (!['book', 'chapter', 'report'].includes(citation.type)) return errors;
+
+  if (!citation.publisher && !citation.source) {
+    errors.push({
+      rule: 'publisherRequired',
+      field: 'publisher',
+      message: `${citation.type === 'chapter' ? 'Book chapter' : citation.type === 'report' ? 'Report' : 'Book'} should include a publisher`,
+      severity: 'error',
+      original: '',
+      autoFixable: false,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: Edition should be a number if present
+ */
+export function checkEditionFormat(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (!citation.edition) return errors;
+
+  if (!/^\d+$/.test(citation.edition)) {
+    errors.push({
+      rule: 'editionFormat',
+      field: 'edition',
+      message: 'Edition should be a number (e.g., "2" for 2nd edition)',
+      severity: 'error',
+      original: citation.edition,
+      autoFixable: false,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: APA 7th removed location from publisher — warn if "City, ST:" pattern found
+ */
+export function checkPublisherLocation(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  const pub = citation.publisher || citation.source || '';
+  // Match "City, ST:" or "City, State:" pattern
+  const locationMatch = pub.match(/^([A-Z][a-zA-Z\s]+,\s*[A-Z]{2}:\s*)/);
+  if (locationMatch) {
+    const suggested = pub.replace(locationMatch[1], '').trim();
+    errors.push({
+      rule: 'publisherLocation',
+      field: 'publisher',
+      message: 'APA 7th edition no longer includes publisher location. Remove "City, ST:" prefix.',
+      severity: 'warning',
+      original: pub,
+      suggested,
+      autoFixable: true,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: Book chapter source should start with "In "
+ */
+export function checkInPrefix(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (citation.type !== 'chapter' || !citation.source) return errors;
+
+  if (!citation.source.startsWith('In ')) {
+    const suggested = `In ${citation.source}`;
+    errors.push({
+      rule: 'inPrefix',
+      field: 'source',
+      message: 'Book chapter source should begin with "In " (e.g., In F. Editor (Ed.), Book title)',
+      severity: 'error',
+      original: citation.source,
+      suggested,
+      autoFixable: true,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: Conference/dissertation should have bracket type descriptor
+ */
+export function checkBracketType(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (!['conference', 'dissertation'].includes(citation.type)) return errors;
+
+  if (!citation.bracketType) {
+    const expected = citation.type === 'conference'
+      ? '[Paper presentation]'
+      : '[Doctoral dissertation, Institution Name]';
+    errors.push({
+      rule: 'bracketType',
+      field: 'bracketType',
+      message: `${citation.type === 'conference' ? 'Conference presentation' : 'Dissertation'} should include type descriptor in brackets (e.g., ${expected})`,
+      severity: 'error',
+      original: '',
+      autoFixable: false,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: Conference citation should include conference name
+ */
+export function checkConferenceInfo(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (citation.type !== 'conference') return errors;
+
+  if (!citation.conferenceName) {
+    errors.push({
+      rule: 'conferenceInfo',
+      field: 'conferenceName',
+      message: 'Conference presentation should include conference name and location',
+      severity: 'error',
+      original: '',
+      autoFixable: false,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: Dissertation should include institution name
+ */
+export function checkDissertationInfo(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (citation.type !== 'dissertation') return errors;
+
+  if (!citation.institution) {
+    errors.push({
+      rule: 'dissertationInfo',
+      field: 'institution',
+      message: 'Dissertation should include institution name in brackets (e.g., [Doctoral dissertation, University Name])',
+      severity: 'error',
+      original: '',
+      autoFixable: false,
+    });
+  }
+
+  return errors;
+}
+
+/**
+ * Rule: Report should ideally include a report number
+ */
+export function checkReportNumber(citation: ParsedCitation): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (citation.type !== 'report') return errors;
+
+  if (!citation.reportNumber) {
+    errors.push({
+      rule: 'reportNumber',
+      field: 'reportNumber',
+      message: 'Report should include a report number if available (e.g., Report No. 2024-01)',
+      severity: 'info',
+      original: '',
+      autoFixable: false,
+    });
+  }
+
+  return errors;
+}
+
+// ── ROUTING SYSTEM ───────────────────────────────────────────────────
+
 /**
  * Type definition for validation rules
  */
 export type ValidationRule = (citation: ParsedCitation) => ValidationError[];
 
 /**
- * All validation rules in order
+ * A rule with type routing information
  */
-export const ALL_RULES: ValidationRule[] = [
-  checkAuthorFormat,
-  checkYearFormat,
-  checkTitleCase,
-  checkJournalNameCase,
-  checkConferenceNameCase,
-  checkChapterEditors,
-  checkDOIPresence,
-  checkDOIFormat,
-  checkVolumeIssueFormat,
-  checkPageFormat,
-  checkAmpersand,
+export interface RoutedRule {
+  rule: ValidationRule;
+  appliesTo: ParsedCitation['type'][] | 'all';
+}
+
+/**
+ * All validation rules with type routing
+ */
+export const ROUTED_RULES: RoutedRule[] = [
+  // Universal rules
+  { rule: checkAuthorFormat, appliesTo: 'all' },
+  { rule: checkYearFormat, appliesTo: 'all' },
+  { rule: checkTitleCase, appliesTo: 'all' },
+  { rule: checkDOIFormat, appliesTo: 'all' },
+  { rule: checkAmpersand, appliesTo: 'all' },
+  { rule: checkTerminalPeriod, appliesTo: 'all' },
+
+  // Journal-specific
+  { rule: checkDOIPresence, appliesTo: ['journal'] },
+  { rule: checkVolumeIssueFormat, appliesTo: ['journal'] },
+  { rule: checkJournalNameCase, appliesTo: ['journal'] },
+
+  // Journal + Chapter
+  { rule: checkPageFormat, appliesTo: ['journal', 'chapter'] },
+
+  // Chapter-specific
+  { rule: checkConferenceNameCase, appliesTo: ['chapter'] },
+  { rule: checkChapterEditors, appliesTo: ['chapter'] },
+  { rule: checkInPrefix, appliesTo: ['chapter'] },
+
+  // Book/Chapter/Report
+  { rule: checkPublisherRequired, appliesTo: ['book', 'chapter', 'report'] },
+  { rule: checkEditionFormat, appliesTo: ['book', 'chapter'] },
+  { rule: checkPublisherLocation, appliesTo: ['book', 'chapter'] },
+
+  // Conference-specific
+  { rule: checkFullDateRequired, appliesTo: ['conference'] },
+  { rule: checkConferenceInfo, appliesTo: ['conference'] },
+
+  // Conference + Dissertation
+  { rule: checkBracketType, appliesTo: ['conference', 'dissertation'] },
+
+  // Dissertation-specific
+  { rule: checkDissertationInfo, appliesTo: ['dissertation'] },
+
+  // Report-specific
+  { rule: checkReportNumber, appliesTo: ['report'] },
 ];
+
+/**
+ * Get rules applicable to a citation's type
+ */
+export function getRulesForType(type: ParsedCitation['type']): ValidationRule[] {
+  return ROUTED_RULES
+    .filter(r => r.appliesTo === 'all' || r.appliesTo.includes(type))
+    .map(r => r.rule);
+}
+
+/**
+ * All validation rules (flat list, backwards-compatible)
+ */
+export const ALL_RULES: ValidationRule[] = ROUTED_RULES.map(r => r.rule);

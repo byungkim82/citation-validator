@@ -42,22 +42,26 @@ export function titleSimilarity(a: string, b: string): number {
 }
 
 /**
+ * Parse a person record (author/editor) from CrossRef into an Author object
+ */
+function parsePerson(person: { family?: string; given?: string }): Author | null {
+  if (!person.family) return null;
+  const initials = person.given
+    ? person.given.split(/\s+/).map((n: string) => n.charAt(0) + '.').join(' ')
+    : '';
+  return { lastName: person.family, initials };
+}
+
+/**
  * Parse a CrossRef API work item into our CrossRefWork type
  */
 export function parseCrossRefResponse(item: any): CrossRefWork {
   // Extract authors
   const authors: Author[] = [];
   if (item.author && Array.isArray(item.author)) {
-    for (const author of item.author) {
-      if (author.family) {
-        const initials = author.given
-          ? author.given.split(/\s+/).map((n: string) => n.charAt(0) + '.').join(' ')
-          : '';
-        authors.push({
-          lastName: author.family,
-          initials
-        });
-      }
+    for (const a of item.author) {
+      const parsed = parsePerson(a);
+      if (parsed) authors.push(parsed);
     }
   }
 
@@ -80,16 +84,9 @@ export function parseCrossRefResponse(item: any): CrossRefWork {
   // Extract editors
   const editors: Author[] = [];
   if (item.editor && Array.isArray(item.editor)) {
-    for (const editor of item.editor) {
-      if (editor.family) {
-        const initials = editor.given
-          ? editor.given.split(/\s+/).map((n: string) => n.charAt(0) + '.').join(' ')
-          : '';
-        editors.push({
-          lastName: editor.family,
-          initials
-        });
-      }
+    for (const e of item.editor) {
+      const parsed = parsePerson(e);
+      if (parsed) editors.push(parsed);
     }
   }
 
@@ -106,6 +103,9 @@ export function parseCrossRefResponse(item: any): CrossRefWork {
     publisher: item.publisher || undefined,
     editors: editors.length > 0 ? editors : undefined,
     edition: item['edition-number'] || undefined,
+    reportNumber: item['report-number'] || undefined,
+    conferenceName: item['event']?.name || undefined,
+    institution: item['institution']?.[0]?.name || undefined,
   };
 }
 
